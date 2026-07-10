@@ -22392,8 +22392,221 @@ task.defer(function()
             end
         end
     end)
-    task.wait(0.3)
+    task.wait(1.25)
     pcall(applyInstanceAccentTheme)
     getgenv().catwareConfigLoading = false
 end)
+
+-- ================================================================
+-- // CATWARE MOBILE BUTTON
+-- // Separate ScreenGui — persists when main menu is toggled
+-- // Draggable, snaps to edge, theme-matched, touch + mouse
+-- ================================================================
+do
+    local UIS          = game:GetService("UserInputService")
+    local TweenService = game:GetService("TweenService")
+    local RunService   = game:GetService("RunService")
+    local CoreGui      = game:GetService("CoreGui")
+
+    -- catware theme pulled directly from Library
+    local ACCENT  = Library.AccentColor      or Color3.fromRGB(255, 40, 40)
+    local MAIN    = Library.MainColor        or Color3.fromRGB(28,  28,  28)
+    local BG      = Library.BackgroundColor  or Color3.fromRGB(20,  20,  20)
+    local OUTLINE = Library.OutlineColor     or Color3.fromRGB(50,  50,  50)
+
+    local BTN_SIZE   = 54
+    local EDGE_PAD   = 14
+    local TAP_THRESH = 12   -- px — anything under this is a tap, not a drag
+    local SNAP_TIME  = 0.22
+    local PULSE_DOWN = 0.08
+    local PULSE_UP   = 0.13
+
+    -- ── Separate ScreenGui ──────────────────────────────────────
+    local MobileGui = Instance.new("ScreenGui")
+    MobileGui.Name            = "catwareMobileBtn"
+    MobileGui.ResetOnSpawn    = false
+    MobileGui.IgnoreGuiInset  = true
+    MobileGui.DisplayOrder    = 2147483647
+    MobileGui.ZIndexBehavior  = Enum.ZIndexBehavior.Global
+    pcall(function()
+        local pg = protectgui or (syn and syn.protect_gui)
+        if pg then pg(MobileGui) end
+    end)
+    MobileGui.Parent = CoreGui
+
+    -- ── Button Frame ────────────────────────────────────────────
+    local Btn = Instance.new("Frame")
+    Btn.Name              = "MobileToggle"
+    Btn.Size              = UDim2.fromOffset(BTN_SIZE, BTN_SIZE)
+    Btn.Position          = UDim2.new(1, -(BTN_SIZE + EDGE_PAD), 0.5, -(BTN_SIZE * 0.5))
+    Btn.BackgroundColor3  = MAIN
+    Btn.BorderSizePixel   = 0
+    Btn.Active            = true
+    Btn.ZIndex            = 10
+    Btn.Parent            = MobileGui
+
+    local BtnCorner = Instance.new("UICorner")
+    BtnCorner.CornerRadius = UDim.new(0, 12)
+    BtnCorner.Parent       = Btn
+
+    local BtnStroke = Instance.new("UIStroke")
+    BtnStroke.Color     = ACCENT
+    BtnStroke.Thickness = 1.5
+    BtnStroke.Parent    = Btn
+
+    -- ── Icon label ──────────────────────────────────────────────
+    local Icon = Instance.new("TextLabel")
+    Icon.Size                = UDim2.new(1, 0, 1, 0)
+    Icon.BackgroundTransparency = 1
+    Icon.Text                = "✕"    -- starts open
+    Icon.TextColor3          = ACCENT
+    Icon.TextSize            = 22
+    Icon.Font                = Enum.Font.GothamBold
+    Icon.ZIndex              = 11
+    Icon.Parent              = Btn
+
+    -- ── Status dot (green = open, hidden = closed) ──────────────
+    local Dot = Instance.new("Frame")
+    Dot.Size             = UDim2.fromOffset(9, 9)
+    Dot.Position         = UDim2.new(1, -5, 0, -4)
+    Dot.BackgroundColor3 = Color3.fromRGB(80, 255, 100)
+    Dot.BorderSizePixel  = 0
+    Dot.ZIndex           = 12
+    Dot.Visible          = true    -- starts open
+    Dot.Parent           = Btn
+    Instance.new("UICorner", Dot).CornerRadius = UDim.new(1, 0)
+
+    -- ── State ───────────────────────────────────────────────────
+    local menuOpen       = true
+    local isDragging     = false
+    local touchStart     = nil   -- Vector2
+    local btnStartOffset = nil   -- Vector2 (X.Offset, Y.Offset)
+
+    -- ── Toggle helper ───────────────────────────────────────────
+    local function setMenuOpen(open)
+        menuOpen = open
+        Library.ScreenGui.Enabled = open
+
+        if open then
+            Icon.Text    = "✕"
+            Dot.Visible  = true
+            Dot.BackgroundColor3 = Color3.fromRGB(80, 255, 100)
+            TweenService:Create(Btn, TweenInfo.new(0.15, Enum.EasingStyle.Quad), {
+                BackgroundColor3 = BG,
+            }):Play()
+        else
+            Icon.Text    = "☰"
+            Dot.Visible  = false
+            TweenService:Create(Btn, TweenInfo.new(0.15, Enum.EasingStyle.Quad), {
+                BackgroundColor3 = MAIN,
+            }):Play()
+        end
+
+        -- Pulse
+        TweenService:Create(Btn, TweenInfo.new(PULSE_DOWN, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+            Size = UDim2.fromOffset(math.floor(BTN_SIZE * 0.85), math.floor(BTN_SIZE * 0.85)),
+        }):Play()
+        task.delay(PULSE_DOWN, function()
+            TweenService:Create(Btn, TweenInfo.new(PULSE_UP, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+                Size = UDim2.fromOffset(BTN_SIZE, BTN_SIZE),
+            }):Play()
+        end)
+    end
+
+    local function toggleMenu()
+        setMenuOpen(not menuOpen)
+    end
+
+    -- ── Snap to nearest horizontal edge ─────────────────────────
+    local function snapToEdge()
+        local vp  = game:GetService("Workspace").CurrentCamera.ViewportSize
+        local mid = Btn.AbsolutePosition.X + BTN_SIZE * 0.5
+        local curY = Btn.Position.Y.Offset
+
+        local targetX = (mid < vp.X * 0.5)
+            and EDGE_PAD
+            or  (vp.X - BTN_SIZE - EDGE_PAD)
+
+        -- clamp Y
+        local clampedY = math.clamp(curY, EDGE_PAD, vp.Y - BTN_SIZE - EDGE_PAD)
+
+        TweenService:Create(Btn, TweenInfo.new(SNAP_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+            Position = UDim2.fromOffset(targetX, clampedY),
+        }):Play()
+    end
+
+    -- ── Input: began ─────────────────────────────────────────────
+    Btn.InputBegan:Connect(function(inp)
+        local t = inp.UserInputType
+        if t ~= Enum.UserInputType.Touch and t ~= Enum.UserInputType.MouseButton1 then return end
+        isDragging     = false
+        touchStart     = Vector2.new(inp.Position.X, inp.Position.Y)
+        btnStartOffset = Vector2.new(Btn.Position.X.Offset, Btn.Position.Y.Offset)
+    end)
+
+    -- ── Input: changed (drag) ────────────────────────────────────
+    Btn.InputChanged:Connect(function(inp)
+        local t = inp.UserInputType
+        if t ~= Enum.UserInputType.Touch and t ~= Enum.UserInputType.MouseMovement then return end
+        if not touchStart then return end
+
+        local delta = Vector2.new(inp.Position.X, inp.Position.Y) - touchStart
+
+        if delta.Magnitude > TAP_THRESH then
+            isDragging = true
+        end
+
+        if isDragging and btnStartOffset then
+            local vp   = game:GetService("Workspace").CurrentCamera.ViewportSize
+            local newX = math.clamp(btnStartOffset.X + delta.X, 0, vp.X - BTN_SIZE)
+            local newY = math.clamp(btnStartOffset.Y + delta.Y, 0, vp.Y - BTN_SIZE)
+            Btn.Position = UDim2.fromOffset(newX, newY)
+        end
+    end)
+
+    -- ── Input: ended (tap = toggle, drag end = snap) ─────────────
+    Btn.InputEnded:Connect(function(inp)
+        local t = inp.UserInputType
+        if t ~= Enum.UserInputType.Touch and t ~= Enum.UserInputType.MouseButton1 then return end
+
+        if isDragging then
+            snapToEdge()
+        else
+            toggleMenu()
+        end
+
+        isDragging     = false
+        touchStart     = nil
+        btnStartOffset = nil
+    end)
+
+    -- ── Keyboard sync (End key / existing keybind) ───────────────
+    -- Keeps button icon accurate if someone uses the keyboard shortcut
+    RunService.Heartbeat:Connect(function()
+        if Library and Library.ScreenGui then
+            local actual = Library.ScreenGui.Enabled
+            if actual ~= menuOpen then
+                menuOpen = actual
+                Icon.Text   = menuOpen and "✕" or "☰"
+                Dot.Visible = menuOpen
+            end
+        end
+    end)
+
+    -- ── Viewport resize: re-clamp position ──────────────────────
+    workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(function()
+        local vp = workspace.CurrentCamera.ViewportSize
+        local cx = math.clamp(Btn.Position.X.Offset, EDGE_PAD, vp.X - BTN_SIZE - EDGE_PAD)
+        local cy = math.clamp(Btn.Position.Y.Offset, EDGE_PAD, vp.Y - BTN_SIZE - EDGE_PAD)
+        Btn.Position = UDim2.fromOffset(cx, cy)
+    end)
+
+    -- ── Expose via getgenv for other scripts ─────────────────────
+    getgenv().catwareMobileGui    = MobileGui
+    getgenv().catwareMobileToggle = toggleMenu
+    getgenv().catwareMobileBtn    = Btn
+
+    print("[catware] mobile button loaded")
+end
+
 end)()
