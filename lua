@@ -22398,30 +22398,37 @@ task.defer(function()
 end)
 
 -- ================================================================
--- // CATWARE MOBILE BUTTON
--- // Separate ScreenGui — persists when main menu is toggled
--- // Draggable, snaps to edge, theme-matched, touch + mouse
+-- // CATWARE MOBILE PATCH — FINAL
+-- // Patch 1: Floating open/close button (separate ScreenGui)
+-- // Patch 2: getconnections rewrap — fixes tabs, buttons,
+-- //          toggles, sliders, dropdowns on touch
+-- //
+-- // Why getconnections:
+-- //   catware connects InputBegan BEFORE this code runs.
+-- //   firesignal fires after-the-fact into an already-filtered
+-- //   handler that drops Touch events. getconnections lets us
+-- //   reach inside the live signal, pull out the function,
+-- //   disable the old connection, and rewire it to accept both
+-- //   Touch and MouseButton1.
 -- ================================================================
+
+-- ════════════════════════════════════════════════════════════════
+-- PATCH 1: FLOATING MOBILE BUTTON
+-- ════════════════════════════════════════════════════════════════
 do
     local UIS          = game:GetService("UserInputService")
     local TweenService = game:GetService("TweenService")
     local RunService   = game:GetService("RunService")
     local CoreGui      = game:GetService("CoreGui")
 
-    -- catware theme pulled directly from Library
-    local ACCENT  = Library.AccentColor      or Color3.fromRGB(255, 40, 40)
-    local MAIN    = Library.MainColor        or Color3.fromRGB(28,  28,  28)
-    local BG      = Library.BackgroundColor  or Color3.fromRGB(20,  20,  20)
-    local OUTLINE = Library.OutlineColor     or Color3.fromRGB(50,  50,  50)
+    local ACCENT = Library.AccentColor     or Color3.fromRGB(255, 40, 40)
+    local MAIN   = Library.MainColor       or Color3.fromRGB(28,  28,  28)
+    local BG     = Library.BackgroundColor or Color3.fromRGB(20,  20,  20)
+    local BTN    = 54
+    local PAD    = 14
+    local THRESH = 12
+    local SNAP_T = 0.2
 
-    local BTN_SIZE   = 54
-    local EDGE_PAD   = 14
-    local TAP_THRESH = 12   -- px — anything under this is a tap, not a drag
-    local SNAP_TIME  = 0.22
-    local PULSE_DOWN = 0.08
-    local PULSE_UP   = 0.13
-
-    -- ── Separate ScreenGui ──────────────────────────────────────
     local MobileGui = Instance.new("ScreenGui")
     MobileGui.Name            = "catwareMobileBtn"
     MobileGui.ResetOnSpawn    = false
@@ -22434,453 +22441,261 @@ do
     end)
     MobileGui.Parent = CoreGui
 
-    -- ── Button Frame ────────────────────────────────────────────
-    local Btn = Instance.new("Frame")
-    Btn.Name              = "MobileToggle"
-    Btn.Size              = UDim2.fromOffset(BTN_SIZE, BTN_SIZE)
-    Btn.Position          = UDim2.new(1, -(BTN_SIZE + EDGE_PAD), 0.5, -(BTN_SIZE * 0.5))
-    Btn.BackgroundColor3  = MAIN
-    Btn.BorderSizePixel   = 0
-    Btn.Active            = true
-    Btn.ZIndex            = 10
-    Btn.Parent            = MobileGui
+    local BtnFrame = Instance.new("Frame")
+    BtnFrame.Name             = "Toggle"
+    BtnFrame.Size             = UDim2.fromOffset(BTN, BTN)
+    BtnFrame.Position         = UDim2.new(1, -(BTN + PAD), 0.5, -(BTN * 0.5))
+    BtnFrame.BackgroundColor3 = BG
+    BtnFrame.BorderSizePixel  = 0
+    BtnFrame.Active           = true
+    BtnFrame.ZIndex           = 10
+    BtnFrame.Parent           = MobileGui
 
     local BtnCorner = Instance.new("UICorner")
     BtnCorner.CornerRadius = UDim.new(0, 12)
-    BtnCorner.Parent       = Btn
+    BtnCorner.Parent       = BtnFrame
 
     local BtnStroke = Instance.new("UIStroke")
     BtnStroke.Color     = ACCENT
     BtnStroke.Thickness = 1.5
-    BtnStroke.Parent    = Btn
+    BtnStroke.Parent    = BtnFrame
 
-    -- ── Icon label ──────────────────────────────────────────────
     local Icon = Instance.new("TextLabel")
-    Icon.Size                = UDim2.new(1, 0, 1, 0)
+    Icon.Size                  = UDim2.new(1, 0, 1, 0)
     Icon.BackgroundTransparency = 1
-    Icon.Text                = "✕"    -- starts open
-    Icon.TextColor3          = ACCENT
-    Icon.TextSize            = 22
-    Icon.Font                = Enum.Font.GothamBold
-    Icon.ZIndex              = 11
-    Icon.Parent              = Btn
+    Icon.Text                  = "✕"
+    Icon.TextColor3            = ACCENT
+    Icon.TextSize              = 22
+    Icon.Font                  = Enum.Font.GothamBold
+    Icon.ZIndex                = 11
+    Icon.Parent                = BtnFrame
 
-    -- ── Status dot (green = open, hidden = closed) ──────────────
     local Dot = Instance.new("Frame")
     Dot.Size             = UDim2.fromOffset(9, 9)
     Dot.Position         = UDim2.new(1, -5, 0, -4)
     Dot.BackgroundColor3 = Color3.fromRGB(80, 255, 100)
     Dot.BorderSizePixel  = 0
     Dot.ZIndex           = 12
-    Dot.Visible          = true    -- starts open
-    Dot.Parent           = Btn
+    Dot.Visible          = true
+    Dot.Parent           = BtnFrame
     Instance.new("UICorner", Dot).CornerRadius = UDim.new(1, 0)
 
-    -- ── State ───────────────────────────────────────────────────
     local menuOpen       = true
     local isDragging     = false
-    local touchStart     = nil   -- Vector2
-    local btnStartOffset = nil   -- Vector2 (X.Offset, Y.Offset)
+    local touchStart     = nil
+    local btnStartOffset = nil
 
-    -- ── Toggle helper ───────────────────────────────────────────
-    local function setMenuOpen(open)
+    local function setOpen(open)
         menuOpen = open
         Library.ScreenGui.Enabled = open
-
-        if open then
-            Icon.Text    = "✕"
-            Dot.Visible  = true
-            Dot.BackgroundColor3 = Color3.fromRGB(80, 255, 100)
-            TweenService:Create(Btn, TweenInfo.new(0.15, Enum.EasingStyle.Quad), {
-                BackgroundColor3 = BG,
-            }):Play()
-        else
-            Icon.Text    = "☰"
-            Dot.Visible  = false
-            TweenService:Create(Btn, TweenInfo.new(0.15, Enum.EasingStyle.Quad), {
-                BackgroundColor3 = MAIN,
-            }):Play()
-        end
-
-        -- Pulse
-        TweenService:Create(Btn, TweenInfo.new(PULSE_DOWN, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-            Size = UDim2.fromOffset(math.floor(BTN_SIZE * 0.85), math.floor(BTN_SIZE * 0.85)),
+        Icon.Text    = open and "✕" or "☰"
+        Dot.Visible  = open
+        TweenService:Create(BtnFrame, TweenInfo.new(0.15, Enum.EasingStyle.Quad), {
+            BackgroundColor3 = open and BG or MAIN
         }):Play()
-        task.delay(PULSE_DOWN, function()
-            TweenService:Create(Btn, TweenInfo.new(PULSE_UP, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
-                Size = UDim2.fromOffset(BTN_SIZE, BTN_SIZE),
+        TweenService:Create(BtnFrame, TweenInfo.new(0.07, Enum.EasingStyle.Quad), {
+            Size = UDim2.fromOffset(math.floor(BTN * 0.86), math.floor(BTN * 0.86))
+        }):Play()
+        task.delay(0.07, function()
+            TweenService:Create(BtnFrame, TweenInfo.new(0.13, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+                Size = UDim2.fromOffset(BTN, BTN)
             }):Play()
         end)
     end
 
-    local function toggleMenu()
-        setMenuOpen(not menuOpen)
-    end
-
-    -- ── Snap to nearest horizontal edge ─────────────────────────
     local function snapToEdge()
-        local vp  = game:GetService("Workspace").CurrentCamera.ViewportSize
-        local mid = Btn.AbsolutePosition.X + BTN_SIZE * 0.5
-        local curY = Btn.Position.Y.Offset
-
-        local targetX = (mid < vp.X * 0.5)
-            and EDGE_PAD
-            or  (vp.X - BTN_SIZE - EDGE_PAD)
-
-        -- clamp Y
-        local clampedY = math.clamp(curY, EDGE_PAD, vp.Y - BTN_SIZE - EDGE_PAD)
-
-        TweenService:Create(Btn, TweenInfo.new(SNAP_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-            Position = UDim2.fromOffset(targetX, clampedY),
+        local vp  = workspace.CurrentCamera.ViewportSize
+        local mid = BtnFrame.AbsolutePosition.X + BTN * 0.5
+        local tX  = (mid < vp.X * 0.5) and PAD or (vp.X - BTN - PAD)
+        local tY  = math.clamp(BtnFrame.Position.Y.Offset, PAD, vp.Y - BTN - PAD)
+        TweenService:Create(BtnFrame, TweenInfo.new(SNAP_T, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+            Position = UDim2.fromOffset(tX, tY)
         }):Play()
     end
 
-    -- ── Input: began ─────────────────────────────────────────────
-    Btn.InputBegan:Connect(function(inp)
+    BtnFrame.InputBegan:Connect(function(inp)
         local t = inp.UserInputType
         if t ~= Enum.UserInputType.Touch and t ~= Enum.UserInputType.MouseButton1 then return end
         isDragging     = false
         touchStart     = Vector2.new(inp.Position.X, inp.Position.Y)
-        btnStartOffset = Vector2.new(Btn.Position.X.Offset, Btn.Position.Y.Offset)
+        btnStartOffset = Vector2.new(BtnFrame.Position.X.Offset, BtnFrame.Position.Y.Offset)
     end)
 
-    -- ── Input: changed (drag) ────────────────────────────────────
-    Btn.InputChanged:Connect(function(inp)
+    BtnFrame.InputChanged:Connect(function(inp)
         local t = inp.UserInputType
         if t ~= Enum.UserInputType.Touch and t ~= Enum.UserInputType.MouseMovement then return end
         if not touchStart then return end
-
         local delta = Vector2.new(inp.Position.X, inp.Position.Y) - touchStart
-
-        if delta.Magnitude > TAP_THRESH then
-            isDragging = true
-        end
-
+        if delta.Magnitude > THRESH then isDragging = true end
         if isDragging and btnStartOffset then
-            local vp   = game:GetService("Workspace").CurrentCamera.ViewportSize
-            local newX = math.clamp(btnStartOffset.X + delta.X, 0, vp.X - BTN_SIZE)
-            local newY = math.clamp(btnStartOffset.Y + delta.Y, 0, vp.Y - BTN_SIZE)
-            Btn.Position = UDim2.fromOffset(newX, newY)
+            local vp = workspace.CurrentCamera.ViewportSize
+            BtnFrame.Position = UDim2.fromOffset(
+                math.clamp(btnStartOffset.X + delta.X, 0, vp.X - BTN),
+                math.clamp(btnStartOffset.Y + delta.Y, 0, vp.Y - BTN)
+            )
         end
     end)
 
-    -- ── Input: ended (tap = toggle, drag end = snap) ─────────────
-    Btn.InputEnded:Connect(function(inp)
+    BtnFrame.InputEnded:Connect(function(inp)
         local t = inp.UserInputType
         if t ~= Enum.UserInputType.Touch and t ~= Enum.UserInputType.MouseButton1 then return end
-
         if isDragging then
             snapToEdge()
         else
-            toggleMenu()
+            setOpen(not menuOpen)
         end
-
-        isDragging     = false
-        touchStart     = nil
-        btnStartOffset = nil
+        isDragging = false touchStart = nil btnStartOffset = nil
     end)
 
-    -- ── Keyboard sync (End key / existing keybind) ───────────────
-    -- Keeps button icon accurate if someone uses the keyboard shortcut
+    -- Sync icon if keyboard shortcut used
     RunService.Heartbeat:Connect(function()
         if Library and Library.ScreenGui then
-            local actual = Library.ScreenGui.Enabled
-            if actual ~= menuOpen then
-                menuOpen = actual
-                Icon.Text   = menuOpen and "✕" or "☰"
-                Dot.Visible = menuOpen
+            local real = Library.ScreenGui.Enabled
+            if real ~= menuOpen then
+                menuOpen = real
+                Icon.Text   = real and "✕" or "☰"
+                Dot.Visible = real
             end
         end
     end)
 
-    -- ── Viewport resize: re-clamp position ──────────────────────
     workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(function()
         local vp = workspace.CurrentCamera.ViewportSize
-        local cx = math.clamp(Btn.Position.X.Offset, EDGE_PAD, vp.X - BTN_SIZE - EDGE_PAD)
-        local cy = math.clamp(Btn.Position.Y.Offset, EDGE_PAD, vp.Y - BTN_SIZE - EDGE_PAD)
-        Btn.Position = UDim2.fromOffset(cx, cy)
-    end)
-
-    -- ── Expose via getgenv for other scripts ─────────────────────
-    getgenv().catwareMobileGui    = MobileGui
-    getgenv().catwareMobileToggle = toggleMenu
-    getgenv().catwareMobileBtn    = Btn
-
-    print("[catware] mobile button loaded")
-end
-
-
--- ================================================================
--- // CATWARE MOBILE INTERACTION PATCH
--- // Fixes: tabs, buttons, sliders, dropdowns on touch
--- //
--- // Root cause: catware uses Frame.InputBegan with
--- //   UserInputType.MouseButton1 check. Touch fires
--- //   UserInputType.Touch — so every handler ignores it.
--- //
--- // Fix stack:
--- //   1. Active=true  → GuiObjects receive touch InputBegan
--- //   2. hookfunction → IsMouseButtonPressed returns true on touch
--- //                     (fixes slider drag-while-held loops)
--- //   3. firesignal   → synthetic MouseButton1 InputBegan/Ended/Changed
--- //                     injected onto hit-tested elements on every touch
--- //   4. UIS global   → InputChanged(MouseMovement) on TouchMoved
--- //                     so slider position math uses touch delta
--- ================================================================
-do
-    local UIS          = game:GetService("UserInputService")
-    local RS           = game:GetService("RunService")
-    local Players      = game:GetService("Players")
-    local LocalPlayer  = Players.LocalPlayer
-
-    -- ── 1. Activate every GuiObject in the catware ScreenGui ──────
-    -- Without Active=true, InputBegan never fires for touch at all.
-    local function activateAll(root)
-        for _, obj in ipairs(root:GetDescendants()) do
-            if obj:IsA("GuiObject") then
-                pcall(function() obj.Active = true end)
-            end
-        end
-    end
-
-    activateAll(Library.ScreenGui)
-
-    Library.ScreenGui.DescendantAdded:Connect(function(obj)
-        task.defer(function()
-            if obj and obj.Parent and obj:IsA("GuiObject") then
-                pcall(function() obj.Active = true end)
-            end
-        end)
-    end)
-
-    -- ── 2. Touch state tracking ───────────────────────────────────
-    local touchDown     = false
-    local touchPos      = Vector2.new(0, 0)
-    local activeTouchCount = 0
-
-    UIS.TouchStarted:Connect(function(touch, gp)
-        activeTouchCount = activeTouchCount + 1
-        touchDown = true
-        touchPos  = Vector2.new(touch.Position.X, touch.Position.Y)
-    end)
-
-    UIS.TouchEnded:Connect(function(touch, gp)
-        activeTouchCount = math.max(0, activeTouchCount - 1)
-        if activeTouchCount == 0 then
-            touchDown = false
-        end
-    end)
-
-    UIS.TouchMoved:Connect(function(touch, gp)
-        touchPos = Vector2.new(touch.Position.X, touch.Position.Y)
-    end)
-
-    -- ── 3. Hook IsMouseButtonPressed ──────────────────────────────
-    -- catware sliders use:
-    --   while InputService:IsMouseButtonPressed(MouseButton1) do ... end
-    -- During a touch this returns false normally → drag ends immediately.
-    -- Hook it to return true while a finger is down.
-    local hookOk = pcall(function()
-        if not hookfunction then error("hookfunction unavailable") end
-        local _orig
-        _orig = hookfunction(
-            UIS.IsMouseButtonPressed,
-            newcclosure(function(self, btn)
-                if btn == Enum.UserInputType.MouseButton1 and touchDown then
-                    return true
-                end
-                return _orig(self, btn)
-            end)
+        BtnFrame.Position = UDim2.fromOffset(
+            math.clamp(BtnFrame.Position.X.Offset, PAD, vp.X - BTN - PAD),
+            math.clamp(BtnFrame.Position.Y.Offset, PAD, vp.Y - BTN - PAD)
         )
     end)
 
-    -- ── 4. Hit-test helper ────────────────────────────────────────
-    -- Returns all visible GuiObjects inside Library.ScreenGui
-    -- that contain point (x, y), sorted by ZIndex descending.
-    local function hitTest(x, y)
-        local out = {}
-        local function walk(parent)
-            for _, child in ipairs(parent:GetChildren()) do
-                if child:IsA("GuiObject") and child.Visible then
-                    local ap = child.AbsolutePosition
-                    local sz = child.AbsoluteSize
-                    if x >= ap.X and x <= ap.X + sz.X
-                    and y >= ap.Y and y <= ap.Y + sz.Y then
-                        table.insert(out, child)
-                        walk(child)
-                    end
-                end
+    getgenv().catwareMobileBtn    = BtnFrame
+    getgenv().catwareMobileToggle = function() setOpen(not menuOpen) end
+end
+
+-- ════════════════════════════════════════════════════════════════
+-- PATCH 2: TOUCH → MOUSEBUTTON1 HANDLER REWRAP
+-- Uses getconnections to reach inside already-connected signals
+-- ════════════════════════════════════════════════════════════════
+do
+    local UIS = game:GetService("UserInputService")
+    local touchDown = false
+    local activeTouches = 0
+
+    UIS.TouchStarted:Connect(function() activeTouches += 1 touchDown = true  end)
+    UIS.TouchEnded:Connect(function()
+        activeTouches = math.max(0, activeTouches - 1)
+        if activeTouches == 0 then touchDown = false end
+    end)
+
+    -- ── Hook IsMouseButtonPressed ─────────────────────────────────
+    -- Fixes slider drag loops: while IsMouseButtonPressed(MB1) do
+    pcall(function()
+        if not hookfunction then error() end
+        local _o
+        _o = hookfunction(UIS.IsMouseButtonPressed, newcclosure(function(self, btn)
+            if btn == Enum.UserInputType.MouseButton1 and touchDown then
+                return true
             end
-        end
-        walk(Library.ScreenGui)
-        table.sort(out, function(a, b)
-            return (a.ZIndex or 0) > (b.ZIndex or 0)
-        end)
-        return out
+            return _o(self, btn)
+        end))
+    end)
+
+    -- ── Proxy factory ─────────────────────────────────────────────
+    -- Returns a table that looks like an InputObject to catware
+    -- handlers but reports UserInputType.MouseButton1
+    local function makeProxy(realInp, overrideType, overrideState)
+        local p = {}
+        setmetatable(p, {
+            __index = function(_, k)
+                if k == "UserInputType"  then return overrideType  or Enum.UserInputType.MouseButton1 end
+                if k == "UserInputState" then return overrideState or realInp.UserInputState           end
+                local v = rawget(realInp, k)
+                if v ~= nil then return v end
+                return (pcall(function() return realInp[k] end) and realInp[k]) or nil
+            end
+        })
+        return p
     end
 
-    -- ── 5. Synthetic signal injection via firesignal ──────────────
-    -- Each touch event creates a proxy table that looks like a
-    -- MouseButton1 InputObject and fires it on the hit elements.
-    -- catware's InputBegan handlers receive this proxy and see
-    -- UserInputType.MouseButton1 — so they execute normally.
+    -- ── Rewrap a single GuiObject's signal ────────────────────────
+    local function rewrapSignal(signal, overrideType, overrideState)
+        if not signal then return end
+        local ok, conns = pcall(getconnections, signal)
+        if not ok or not conns or #conns == 0 then return end
 
-    local HIT_DEPTH = 6   -- fire on top N elements per tap
+        for _, conn in ipairs(conns) do
+            local func = conn.Function
+            if not func then continue end
 
-    local hasFirSignal = (typeof(firesignal) == "function")
+            -- Disable original connection
+            pcall(function() conn:Disable() end)
 
-    local function makeProxy(uiType, uiState, px, py, dx, dy)
-        return {
-            UserInputType  = uiType,
-            UserInputState = uiState,
-            Position       = Vector3.new(px, py, 0),
-            Delta          = Vector3.new(dx or 0, dy or 0, 0),
-            KeyCode        = Enum.KeyCode.Unknown,
-            IsModifierKeyDown = function() return false end,
-        }
-    end
-
-    if hasFirSignal then
-
-        -- Touch START → InputBegan(MouseButton1)
-        UIS.TouchStarted:Connect(function(touch, gp)
-            if gp then return end
-            local x, y  = touch.Position.X, touch.Position.Y
-            local elems = hitTest(x, y)
-            local proxy = makeProxy(
-                Enum.UserInputType.MouseButton1,
-                Enum.UserInputState.Begin,
-                x, y
-            )
-            for i = 1, math.min(HIT_DEPTH, #elems) do
-                pcall(firesignal, elems[i].InputBegan, proxy, false)
-            end
-        end)
-
-        -- Touch END → InputEnded(MouseButton1)
-        UIS.TouchEnded:Connect(function(touch, gp)
-            if gp then return end
-            local x, y  = touch.Position.X, touch.Position.Y
-            local elems = hitTest(x, y)
-            local proxy = makeProxy(
-                Enum.UserInputType.MouseButton1,
-                Enum.UserInputState.End,
-                x, y
-            )
-            for i = 1, math.min(HIT_DEPTH, #elems) do
-                pcall(firesignal, elems[i].InputEnded, proxy, false)
-            end
-        end)
-
-        -- Touch MOVE → InputChanged(MouseMovement)
-        -- catware sliders update position inside a RenderStepped loop
-        -- that reads Mouse.X (works natively on mobile) and fires
-        -- InputChanged on the slider frame — we reinforce that here.
-        UIS.TouchMoved:Connect(function(touch, gp)
-            if gp then return end
-            local x, y   = touch.Position.X, touch.Position.Y
-            local dx, dy = touch.Delta.X,    touch.Delta.Y
-            local elems  = hitTest(x, y)
-            local proxy  = makeProxy(
-                Enum.UserInputType.MouseMovement,
-                Enum.UserInputState.Change,
-                x, y, dx, dy
-            )
-            for i = 1, math.min(HIT_DEPTH, #elems) do
-                pcall(firesignal, elems[i].InputChanged, proxy, false)
-            end
-            -- Fire at ScreenGui level too (window drag uses this)
-            pcall(firesignal, Library.ScreenGui.InputChanged, proxy, false)
-        end)
-
-    else
-        -- ── firesignal unavailable: TextButton overlay fallback ────
-        -- Wraps every interactive-looking Frame in a transparent
-        -- TextButton. TextButton.MouseButton1Click fires natively
-        -- on mobile tap, which routes through Roblox's GUI system.
-        -- Less reliable than firesignal but better than nothing.
-
-        local wrapped = {}
-
-        local function wrapInteractive(frame)
-            if wrapped[frame] then return end
-            -- Heuristic: interactive frames in catware have a specific
-            -- size range and are children of groupbox content frames
-            local sz = frame.AbsoluteSize
-            if sz.Y < 10 or sz.Y > 60 then return end
-
-            wrapped[frame] = true
-
-            local overlay = Instance.new("TextButton")
-            overlay.Name                  = "_MobileOverlay"
-            overlay.Size                  = UDim2.new(1, 0, 1, 0)
-            overlay.Position              = UDim2.new(0, 0, 0, 0)
-            overlay.BackgroundTransparency = 1
-            overlay.Text                  = ""
-            overlay.ZIndex                = frame.ZIndex + 50
-            overlay.Active                = true
-            overlay.Parent                = frame
-
-            -- MouseButton1Click fires on mobile tap natively
-            overlay.MouseButton1Click:Connect(function()
-                -- Find the nearest Toggles/Options entry for this frame
-                -- by checking if any toggle's linked frame matches
-                -- (We bubble up through frame hierarchy looking for named elements)
-                local cur = frame
-                for _ = 1, 8 do
-                    if cur == nil or cur == Library.ScreenGui then break end
-                    -- Try to fire InputBegan on the frame directly
-                    -- by simulating it through the overlay's parent
-                    cur = cur.Parent
+            -- Reconnect: pass original input first,
+            -- then if it was Touch, pass proxy with MB1 type
+            signal:Connect(function(inp, gp)
+                pcall(func, inp, gp)
+                local uiType = inp.UserInputType
+                if uiType == Enum.UserInputType.Touch then
+                    pcall(func, makeProxy(inp, overrideType, overrideState), gp)
                 end
             end)
         end
-
-        -- Walk the ScreenGui periodically and wrap new elements
-        RS.Heartbeat:Connect(function()
-            for _, obj in ipairs(Library.ScreenGui:GetDescendants()) do
-                if obj:IsA("Frame") and not obj:FindFirstChild("_MobileOverlay") then
-                    pcall(wrapInteractive, obj)
-                end
-            end
-        end)
     end
 
-    -- ── 6. UIS-level InputBegan/Changed bridge ────────────────────
-    -- Some catware handlers are connected at UserInputService level
-    -- (not GuiObject level). Bridge touch to mouse there too.
-    UIS.InputBegan:Connect(function(inp, gp)
-        if inp.UserInputType ~= Enum.UserInputType.Touch then return end
-        if gp then return end
-        -- UIS-level handlers in catware check KeyCode for keybinds;
-        -- touch has none — nothing to do here beyond what step 5 covers.
+    -- ── Rewrap all three input signals on a GuiObject ─────────────
+    local patchedObjs = {}
+
+    local function patchObj(obj)
+        if not obj:IsA("GuiObject") then return end
+        if patchedObjs[obj] then return end
+        patchedObjs[obj] = true
+
+        pcall(function() obj.Active = true end)
+        rewrapSignal(obj.InputBegan,   Enum.UserInputType.MouseButton1, Enum.UserInputState.Begin)
+        rewrapSignal(obj.InputEnded,   Enum.UserInputType.MouseButton1, Enum.UserInputState.End)
+        rewrapSignal(obj.InputChanged, Enum.UserInputType.MouseMovement, Enum.UserInputState.Change)
+    end
+
+    -- ── Walk the entire ScreenGui NOW (all catware elements loaded) ─
+    for _, obj in ipairs(Library.ScreenGui:GetDescendants()) do
+        pcall(patchObj, obj)
+    end
+
+    -- ── Patch new elements as catware spawns them dynamically ──────
+    -- (dropdowns, popup menus, tab content frames all spawn on demand)
+    Library.ScreenGui.DescendantAdded:Connect(function(obj)
+        task.defer(function()
+            if obj and obj.Parent then
+                pcall(patchObj, obj)
+            end
+        end)
     end)
 
-    -- The mouse delta tracking on mobile:
-    -- Roblox's LocalPlayer:GetMouse() X/Y automatically tracks the
-    -- last touch position, so slider math that reads Mouse.X is fine.
-    -- No additional bridging needed for that path.
-
-    -- ── 7. Scroll fix for mobile ──────────────────────────────────
-    -- ScrollingFrames inside catware (dropdowns, etc.) need touch
-    -- scroll to work. Roblox handles this natively when Active=true
-    -- on the ScrollingFrame, but the scroll sensitivity may be low.
+    -- ── ScrollingFrame fix for dropdowns ──────────────────────────
     for _, obj in ipairs(Library.ScreenGui:GetDescendants()) do
         if obj:IsA("ScrollingFrame") then
-            obj.Active            = true
-            obj.ScrollingEnabled  = true
+            pcall(function()
+                obj.Active           = true
+                obj.ScrollingEnabled = true
+            end)
         end
     end
     Library.ScreenGui.DescendantAdded:Connect(function(obj)
         if obj:IsA("ScrollingFrame") then
-            obj.Active           = true
-            obj.ScrollingEnabled = true
+            pcall(function()
+                obj.Active           = true
+                obj.ScrollingEnabled = true
+            end)
         end
     end)
 
-    print(("[catware mobile patch] Active=true ✓ | hookfunction=%s | firesignal=%s"):format(
-        tostring(hookOk), tostring(hasFirSignal)
-    ))
+    -- ── UIS-level InputChanged bridge ─────────────────────────────
+    -- catware's window drag handler sits on UserInputService, not a Frame.
+    -- Rewrap those connections too.
+    rewrapSignal(UIS.InputChanged, Enum.UserInputType.MouseMovement, Enum.UserInputState.Change)
+    rewrapSignal(UIS.InputBegan,   Enum.UserInputType.MouseButton1,  Enum.UserInputState.Begin)
+    rewrapSignal(UIS.InputEnded,   Enum.UserInputType.MouseButton1,  Enum.UserInputState.End)
+
+    print("[catware mobile v2] rewrap complete — " .. #Library.ScreenGui:GetDescendants() .. " objects patched")
 end
 
 end)()
